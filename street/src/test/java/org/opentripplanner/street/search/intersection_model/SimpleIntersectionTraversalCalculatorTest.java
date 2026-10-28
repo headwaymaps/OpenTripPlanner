@@ -1,20 +1,31 @@
 package org.opentripplanner.street.search.intersection_model;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.opentripplanner.street.model.StreetModelFactory.intersectionVertex;
+import static org.opentripplanner.street.model.StreetModelFactory.streetEdge;
+import static org.opentripplanner.street.model.StreetModelFactory.streetEdgeBuilder;
 import static org.opentripplanner.street.search.intersection_model.AbstractIntersectionTraversalCalculator.calculateTurnAngle;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.LineString;
 import org.opentripplanner.core.model.i18n.NonLocalizedString;
 import org.opentripplanner.street.geometry.GeometryUtils;
+import org.opentripplanner.street.geometry.SphericalDistanceLibrary;
+import org.opentripplanner.street.geometry.WgsCoordinate;
 import org.opentripplanner.street.model.StreetTraversalPermission;
 import org.opentripplanner.street.model.edge.StreetEdge;
 import org.opentripplanner.street.model.edge.StreetEdgeBuilder;
@@ -109,6 +120,128 @@ public class SimpleIntersectionTraversalCalculatorTest {
       leftHandDriveCostModel.computeTraversalDuration(v2, e3, e1, TraverseMode.BICYCLE, 40, 40),
       0.1
     );
+  }
+
+  /** A traffic circle at a four-way intersection, entered from the south. */
+  @Test
+  public void testBicycleTrafficCircle() {
+    var circle = roundabout(7, ARM_BEARINGS);
+    var arms = IntStream.range(0, ARM_BEARINGS.length)
+      .mapToObj(i ->
+        twoWay((StreetVertex) circle.get(i).getFromVertex(), vertexAt(ARM_BEARINGS[i], 100))
+      )
+      .toList();
+
+    var durations = IntStream.rangeClosed(1, 4)
+      .mapToDouble(exit -> {
+        var path = new ArrayList<StreetEdge>();
+        path.add(arms.get(0).in());
+        path.addAll(circle.subList(0, exit));
+        path.add(arms.get(exit % 4).out());
+        return bicycleTurnDuration(path);
+      })
+      .toArray();
+
+    // Right, straight, left, U-turn.
+    assertArrayEquals(new double[] { 4.5, 18.0, 31.5, 45.0 }, durations, 0.01);
+  }
+
+  /** Turning right off the traffic circle when its east arm is a few degrees off square. */
+  @ParameterizedTest
+  @CsvSource({ "86, 0.86", "94, 4.7" })
+  public void testBicycleSkewedTrafficCircle(double eastBearing, double right) {
+    var bearings = new double[] { 180, eastBearing, 0, 270 };
+    var circle = roundabout(7, bearings);
+    var arms = IntStream.range(0, bearings.length)
+      .mapToObj(i -> twoWay((StreetVertex) circle.get(i).getFromVertex(), vertexAt(bearings[i], 100))
+      )
+      .toList();
+
+    var path = List.of(arms.get(0).in(), circle.get(0), arms.get(1).out());
+    assertEquals(right, bicycleTurnDuration(path), 0.01);
+  }
+
+  /**
+   * The four-way intersection of {@link #testBicycleTrafficCircle()} without its traffic circle.
+   */
+  @Test
+  public void testBicycleFourWayIntersection() {
+    var center = vertexAt(0, 0);
+    var arms = Arrays.stream(ARM_BEARINGS)
+      .mapToObj(bearing -> twoWay(center, vertexAt(bearing, 100)))
+      .toList();
+
+    var durations = IntStream.rangeClosed(1, 4)
+      .mapToDouble(exit -> bicycleTurnDuration(List.of(arms.get(0).in(), arms.get(exit % 4).out())))
+      .toArray();
+
+    // Right, straight, left, U-turn.
+    assertArrayEquals(new double[] { 4.5, 0, 13.5, 27.0 }, durations, 0.01);
+  }
+
+  private static final WgsCoordinate CENTER = new WgsCoordinate(47.614, -122.29);
+
+  /** South, east, north and west: counterclockwise, the way traffic flows around a roundabout. */
+  private static final double[] ARM_BEARINGS = { 180, 90, 0, 270 };
+
+  /** A vertex {@code meters} from {@link #CENTER} at compass {@code bearing}. */
+  private static IntersectionVertex vertexAt(double bearing, double meters) {
+    var c = coordinateAt(bearing, meters);
+    return intersectionVertex(c.y, c.x);
+  }
+
+  private static Coordinate coordinateAt(double bearing, double meters) {
+    var radians = Math.toRadians(bearing);
+    return SphericalDistanceLibrary.moveMeters(
+      CENTER,
+      meters * Math.cos(radians),
+      meters * Math.sin(radians)
+    ).asJtsCoordinate();
+  }
+
+  private record TwoWay(StreetEdge in, StreetEdge out) {}
+
+  /** A two-way street from {@code junction} to {@code end}. */
+  private static TwoWay twoWay(StreetVertex junction, StreetVertex end) {
+    return new TwoWay(streetEdge(end, junction), streetEdge(junction, end));
+  }
+
+  /** Roundabout edges around {@link #CENTER}, counterclockwise between junctions at {@code bearings}. */
+  private static List<StreetEdge> roundabout(double radius, double... bearings) {
+    var junctions = Arrays.stream(bearings)
+      .mapToObj(bearing -> vertexAt(bearing, radius))
+      .toList();
+    var edges = new ArrayList<StreetEdge>();
+    for (int i = 0; i < bearings.length; i++) {
+      int next = (i + 1) % bearings.length;
+      double sweep = (bearings[i] - bearings[next] + 360) % 360;
+      int segments = (int) Math.ceil(sweep / 15);
+      var coords = new Coordinate[segments + 1];
+      coords[0] = junctions.get(i).getCoordinate();
+      for (int k = 1; k < segments; k++) {
+        coords[k] = coordinateAt(bearings[i] - (sweep * k) / segments, radius);
+      }
+      coords[segments] = junctions.get(next).getCoordinate();
+      edges.add(
+        streetEdgeBuilder(junctions.get(i), junctions.get(next), 1.0, StreetTraversalPermission.ALL)
+          .withGeometry(GeometryUtils.makeLineString(coords))
+          .withRoundabout(true)
+          .buildAndConnect()
+      );
+    }
+    return edges;
+  }
+
+  /** Total bicycle turn duration riding along {@code path}. */
+  private double bicycleTurnDuration(List<StreetEdge> path) {
+    double total = 0;
+    for (int i = 1; i < path.size(); i++) {
+      var from = path.get(i - 1);
+      var to = path.get(i);
+      var v = (IntersectionVertex) from.getToVertex();
+      total += calculator.computeTraversalDuration(v, from, to, TraverseMode.BICYCLE, 5, 5);
+    }
+    return total;
   }
 
   @Test
