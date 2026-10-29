@@ -177,6 +177,9 @@ public class SimpleIntersectionTraversalCalculator
 
     if (v.hasCyclingTrafficLight()) {
       return baseDuration + getExpectedWalkingAndCyclingTrafficLightTimeSec();
+    } else if (from.isRoundabout() || to.isRoundabout()) {
+      // Every turn on and around a roundabout follows the flow of traffic.
+      return baseDuration;
     } else if (isTurnAcrossTraffic(turnAngle)) {
       return baseDuration * getAcrossTrafficBicycleTurnMultiplier();
     } else if (isSafeTurn(turnAngle)) {

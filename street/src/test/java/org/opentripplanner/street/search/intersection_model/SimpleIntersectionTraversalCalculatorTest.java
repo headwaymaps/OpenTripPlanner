@@ -143,12 +143,12 @@ public class SimpleIntersectionTraversalCalculatorTest {
       .toArray();
 
     // Right, straight, left, U-turn.
-    assertArrayEquals(new double[] { 4.5, 18.0, 31.5, 45.0 }, durations, 0.01);
+    assertArrayEquals(new double[] { 0.9, 1.8, 2.7, 3.6 }, durations, 0.01);
   }
 
   /** Turning right off the traffic circle when its east arm is a few degrees off square. */
   @ParameterizedTest
-  @CsvSource({ "86, 0.86", "94, 4.7" })
+  @CsvSource({ "86, 0.86", "94, 0.94" })
   public void testBicycleSkewedTrafficCircle(double eastBearing, double right) {
     var bearings = new double[] { 180, eastBearing, 0, 270 };
     var circle = roundabout(7, bearings);
